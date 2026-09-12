@@ -122,7 +122,7 @@ cmd_start() {
 
   mkdir -p "$PROFILE" "$LOGDIR"
   rm -f "$PORTFILE"
-  echo "browser: 启动专用实例…（profile: $PROFILE）"
+  echo "browser: 启动专用实例…（profile: ${PROFILE}）"
 
   nohup "$bin" \
     --remote-debugging-port=0 \
@@ -161,7 +161,7 @@ cmd_stop() {
 cmd_status() {
   local p; p=$(cdp_port)
   if cdp_ready; then
-    echo "✓ 专用实例在线（端口 $p）"
+    echo "✓ 专用实例在线（端口 ${p}）"
     curl -s "http://127.0.0.1:$p/json/version" | sed -n '2p'
     local pages
     pages=$(curl -s "http://127.0.0.1:$p/json" \
@@ -304,7 +304,7 @@ cmd_sync_login() {
   local i
   for i in {1..60}; do cdp_ready && break; sleep 0.5; done
   if ! cdp_ready; then
-    print -u2 "✗ 解密实例未就绪（日志：$LOG）"
+    print -u2 "✗ 解密实例未就绪（日志：${LOG}）"
     cmd_stop >/dev/null
     return 1
   fi

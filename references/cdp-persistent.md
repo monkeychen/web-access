@@ -124,7 +124,7 @@ macOS 上 Cookie 用 Keychain 里的密码派生的密钥加密（PBKDF2 + AES-1
 | Cookie 搬运 | `scripts/cookie-transfer.mjs` | CDP 导出/导入明文 cookie（`Storage.getCookies` / `Storage.setCookies`） |
 | 激活标签页 | `scripts/activate-tab.mjs` | 发 `Target.activateTarget` 把 tab 切到前台（见第六节） |
 | 专用 profile | `~/.web-access/browser-profile` | 与用户日常浏览器完全隔离 |
-| 实例参数 | `--remote-debugging-port=0 --no-startup-window --remote-allow-origins=*` | 无窗口、无弹窗、Chrome 自选端口并写引导文件 |
+| 实例参数 | `--remote-debugging-port=0 --no-startup-window --remote-allow-origins=*` | 启动时不弹初始窗口（首个 tab 由 CDP 创建时正常开窗）；无授权弹窗；Chrome 自选端口并写引导文件 |
 | 发现 | `browser-discovery.mjs` 的 `knownBrowsers()` 新增 `web-access` 项 | 读专用 profile 下的 `DevToolsActivePort` |
 | 偏好 | `config.env` → `WEB_ACCESS_BROWSER=web-access` | 精确选中专用实例，不碰日常 Chrome |
 | 按需启动 | `check-deps.mjs`：偏好为 `web-access` 且未检测到 → 自动拉起后重试 | 无常驻、无自启服务 |
@@ -184,14 +184,24 @@ check-deps.mjs
 
 ---
 
-## 六、专用实例的 tab 默认处于后台（采集长列表必读）
+## 六、标签页可见性（采集长列表必读）
 
-专用实例的 tab `document.visibilityState` **默认是 `hidden`**，即使实例里只有这一个 tab。
+标签页在**不是窗口的活动标签页**时（或窗口被完全遮挡 / 最小化 / 在其他 Space），
+`document.visibilityState` 会是 `hidden`。
+
+**反直觉的一点**：`hidden` 与「用户能否看到窗口」**不是一回事** —— 窗口就在屏幕最前、
+用户看得清清楚楚，只要切到另一个 tab，原 tab 立刻变 `hidden`。2026-09-12 实测：同一窗口内
+用 `activate-tab.mjs` 切换活动 tab，旧 tab 变 `hidden:true` / `hasFocus:false`，
+**窗口全程在前台未动**；关闭新 tab 后旧 tab 回到 `visible`。
+
 后果：首屏能加载（约 5 条），但**滚动完全不触发新请求** —— `scrollHeight` 卡死、
 `scrollY` 顶到上限不动，极易误判成"站点限制了访问"。
 
 处理：`node scripts/activate-tab.mjs <targetId>`（端口自动发现），实测立刻变
 `visible` / `hasFocus: true`。X 等站点的时间线与关注/粉丝列表都受影响。
+
+> 可见性**只影响页面自身的懒加载策略**，不影响 CDP 的读写能力 —— `hidden` 状态下
+> `/eval`、`/navigate`、`/screenshot` 全部照常工作（实测 `hidden` 时仍能读到页面文本）。
 
 ---
 

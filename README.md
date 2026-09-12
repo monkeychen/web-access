@@ -281,7 +281,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <targetId> 9222     # 显式
 WEB_ACCESS_PORT=9222 node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <targetId>
 ```
 
-**为什么需要它**：专用实例的标签页 `document.visibilityState` **默认是 `hidden`**，即使实例里只有这一个标签页。不少站点的长列表 / 时间线**只在页面前台可见时才加载下一页** —— 标签页处于后台时滚动完全不触发新请求，表现为 `scrollHeight` 卡死、`scrollY` 顶到上限不动，极易被误判成「站点限制了访问」。已知受影响：X 的首页时间线与关注 / 粉丝列表。
+**为什么需要它**：标签页在**不是窗口的活动标签页**时（或窗口被完全遮挡 / 最小化 / 在其他 Space），`document.visibilityState` 会是 `hidden`。**注意这不等于「用户看不到窗口」** —— 窗口就在屏幕最前，只要切到另一个标签页，原标签页同样是 `hidden`；而它**只影响页面自身的懒加载策略**，不影响 CDP 的读写（`/eval`、`/screenshot` 在 `hidden` 下照常工作）。不少站点的长列表 / 时间线**只在页面前台可见时才加载下一页** —— 标签页处于后台时滚动完全不触发新请求，表现为 `scrollHeight` 卡死、`scrollY` 顶到上限不动，极易被误判成「站点限制了访问」。已知受影响：X 的首页时间线与关注 / 粉丝列表。
 
 它的做法是直连 browser 级 WebSocket 发 `Target.activateTarget`（**Proxy 未暴露 `/activate` 端点**），成功后 `visibilityState` 立刻变 `visible`、`hasFocus` 变 `true`。依赖 Node.js 22+ 自带的 WebSocket，无第三方依赖。
 
