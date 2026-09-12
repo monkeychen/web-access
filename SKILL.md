@@ -113,6 +113,8 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 **⚠️ 专用实例必须用「应用身份独立」的浏览器**（默认 `Google Chrome for Testing`，bundle id `com.google.chrome.for.testing`）。
 **绝不能直接跑 `/Applications/Google Chrome.app`** —— 它与用户的日常 Chrome 是同一个应用（bundle id 均为 `com.google.Chrome`），macOS 会认为"Chrome 已在运行"，把点 Dock 图标 / `open -a "Google Chrome"` 全部路由到这个无窗口的实例上，用户看到的现象是「Chrome 开不了、也关不掉」，日常浏览器根本起不来。（2026-09-12 实际踩到过，headless 模式同样会被抢占，只有应用身份独立才能避免。）
 
+**首次使用需先安装专用浏览器**：`scripts/browser-launch.sh install-browser` —— 从本机 Playwright 缓存复制一份 `Google Chrome for Testing` 到 `~/.web-access/browser/`（APFS 写时复制，瞬间完成且不额外占磁盘；缓存为空时会提示先用 `npx playwright install chromium` 获取）。每个环境只需一次。若 `start` 报「找不到可用的专用浏览器」，执行这条即可。
+
 **专用实例首次使用时没有登录态**：跑一次 `scripts/browser-launch.sh sync-login` 从日常 Chrome 导入（**无需关闭 Chrome** —— 复制运行中的 SQLite 快照即可，实测 334 条库中稳定导出 308 条 cookie，x.com / 公众号 / GitHub 等登录态均可用）。个别站点仍需人工登录时用 `scripts/browser-launch.sh open` 打开可见窗口。快照不会与日常 Chrome 自动同步。
 
 所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。用户自己的浏览器与本 skill 无关，不做任何改动。任务完成后关闭自己创建的 tab，保持环境整洁。
@@ -125,7 +127,7 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 
 脚本会依次检查 Node.js、探测浏览器（专用实例未运行时**自动拉起**）、并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
 
-需要关闭专用实例时：`./scripts/browser-launch.sh stop`（按需启停，无常驻、无自启服务）。
+查看实例是否在运行：`./scripts/browser-launch.sh status`（同时显示浏览器与 profile 路径）；需要关闭时：`./scripts/browser-launch.sh stop`（按需启停，无常驻、无自启服务）。
 
 ### Proxy API
 
