@@ -30,18 +30,23 @@ export function knownBrowsers() {
         { id: 'chrome-canary', label: 'Chrome Canary',  devToolsPath: path.join(home, 'Library/Application Support/Google/Chrome Canary/DevToolsActivePort') },
         { id: 'chromium',      label: 'Chromium',       devToolsPath: path.join(home, 'Library/Application Support/Chromium/DevToolsActivePort') },
         { id: 'edge',          label: 'Microsoft Edge', devToolsPath: path.join(home, 'Library/Application Support/Microsoft Edge/DevToolsActivePort') },
+        // skill 自管的专用实例：独立 profile，与用户日常浏览器完全隔离
+        // 为何另起实例而非直连日常浏览器，见 ../references/cdp-persistent.md
+        { id: 'web-access',    label: 'Chrome（web-access 专用）', devToolsPath: path.join(home, '.web-access/browser-profile/DevToolsActivePort') },
       ];
     case 'linux':
       return [
         { id: 'chrome',   label: 'Chrome',         devToolsPath: path.join(home, '.config/google-chrome/DevToolsActivePort') },
         { id: 'chromium', label: 'Chromium',       devToolsPath: path.join(home, '.config/chromium/DevToolsActivePort') },
         { id: 'edge',     label: 'Microsoft Edge', devToolsPath: path.join(home, '.config/microsoft-edge/DevToolsActivePort') },
+        { id: 'web-access', label: 'Chrome（web-access 专用）', devToolsPath: path.join(home, '.web-access/browser-profile/DevToolsActivePort') },
       ];
     case 'win32':
       return [
         { id: 'chrome',   label: 'Chrome',         devToolsPath: path.join(localAppData, 'Google/Chrome/User Data/DevToolsActivePort') },
         { id: 'chromium', label: 'Chromium',       devToolsPath: path.join(localAppData, 'Chromium/User Data/DevToolsActivePort') },
         { id: 'edge',     label: 'Microsoft Edge', devToolsPath: path.join(localAppData, 'Microsoft/Edge/User Data/DevToolsActivePort') },
+        { id: 'web-access', label: 'Chrome（web-access 专用）', devToolsPath: path.join(home, '.web-access/browser-profile/DevToolsActivePort') },
       ];
     default:
       return [];

@@ -130,8 +130,28 @@ function printAvailableHint(detected) {
   }
 }
 
+// 专用实例的按需启动（不常驻、不碰用户日常浏览器）
+// 机制与取舍见 references/cdp-persistent.md
+async function ensureDedicatedInstance() {
+  const script = path.join(ROOT, 'scripts', 'browser-launch.sh');
+  if (!fs.existsSync(script)) return false;
+  return await new Promise((resolve) => {
+    const child = spawn(script, ['start'], { stdio: 'inherit' });
+    child.on('close', (code) => resolve(code === 0));
+    child.on('error', () => resolve(false));
+  });
+}
+
 async function resolveAndReport(override) {
-  const result = await selectBrowser(override);
+  let result = await selectBrowser(override);
+
+  // 偏好指向专用实例但未检测到 → 自动拉起后重试一次
+  const expectedId = override || result.configured;
+  if (result.kind === 'mismatch' && expectedId === 'web-access') {
+    const started = await ensureDedicatedInstance();
+    if (!started) return { proceed: false, exitCode: 1 };
+    result = await selectBrowser(override);
+  }
 
   switch (result.kind) {
     case 'ok': {

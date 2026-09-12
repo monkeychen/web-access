@@ -106,8 +106,16 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 
 ## 浏览器 CDP 模式
 
-通过 CDP Proxy 直连用户日常浏览器（Chrome / Edge / Chromium 等 Chromium 系），天然携带登录态，无需启动独立浏览器。
-若无用户明确要求，不主动操作用户已有 tab，所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。不关闭用户 tab 的前提下，完成任务后关闭自己创建的 tab，保持环境整洁。
+通过 CDP Proxy 连接一个 **web-access 专用浏览器实例**（独立 profile，由 `scripts/browser-launch.sh` 按需启动），与用户的日常浏览器完全隔离。
+
+**为什么不是直连日常浏览器**：Chrome 136+ 起，指向默认 profile 的 `--remote-debugging-port` 会被静默忽略（`chrome_paths.cc` 里是路径相等比较）；退回 `chrome://inspect` 的 toggle 模式则是 **approval 机制** —— 每次新连接都要人工点「允许」，官方不提供"记住"。而"让日常浏览器带调试端口启动"意味着改动用户的浏览器行为（数据目录 / 启动方式 / 生命周期），代价过高。完整机制见 `references/cdp-persistent.md`。
+
+**⚠️ 专用实例必须用「应用身份独立」的浏览器**（默认 `Google Chrome for Testing`，bundle id `com.google.chrome.for.testing`）。
+**绝不能直接跑 `/Applications/Google Chrome.app`** —— 它与用户的日常 Chrome 是同一个应用（bundle id 均为 `com.google.Chrome`），macOS 会认为"Chrome 已在运行"，把点 Dock 图标 / `open -a "Google Chrome"` 全部路由到这个无窗口的实例上，用户看到的现象是「Chrome 开不了、也关不掉」，日常浏览器根本起不来。（2026-09-12 实际踩到过，headless 模式同样会被抢占，只有应用身份独立才能避免。）
+
+**专用实例首次使用时没有登录态**：跑一次 `scripts/browser-launch.sh sync-login` 从日常 Chrome 导入（**无需关闭 Chrome** —— 复制运行中的 SQLite 快照即可，实测 334 条库中稳定导出 308 条 cookie，x.com / 公众号 / GitHub 等登录态均可用）。个别站点仍需人工登录时用 `scripts/browser-launch.sh open` 打开可见窗口。快照不会与日常 Chrome 自动同步。
+
+所有操作都在自己创建的后台 tab 中进行，保持对用户环境的最小侵入。用户自己的浏览器与本 skill 无关，不做任何改动。任务完成后关闭自己创建的 tab，保持环境整洁。
 
 ### 启动
 
@@ -115,14 +123,16 @@ node "${CLAUDE_SKILL_DIR}/scripts/find-url.mjs" [关键词...] [--only bookmarks
 node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 ```
 
-脚本会依次检查 Node.js、浏览器调试端口，并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
+脚本会依次检查 Node.js、探测浏览器（专用实例未运行时**自动拉起**）、并确保 Proxy 已连接（未运行则自动启动并等待）。Proxy 启动后持续运行。
+
+需要关闭专用实例时：`./scripts/browser-launch.sh stop`（按需启停，无常驻、无自启服务）。
 
 ### Proxy API
 
 所有操作通过 curl 调用 HTTP API：
 
 ```bash
-# 列出用户已打开的 tab
+# 列出专用实例中已打开的 tab
 curl -s http://localhost:3456/targets
 
 # 创建新后台 tab（自动等待加载）— URL 走 POST body，避免目标 URL 含 query 时被切分
@@ -158,6 +168,14 @@ curl -s "http://localhost:3456/scroll?target=ID&direction=bottom"
 curl -s "http://localhost:3456/close?target=ID"
 ```
 
+**后台标签页不加载懒内容时**：部分站点（已知 X 的时间线与关注/粉丝列表）**只在页面前台可见时才加载更多**，标签页处于后台（`document.visibilityState === "hidden"`）时滚动完全不触发请求 —— 表现为 `scrollHeight` 卡死、`scrollY` 顶到上限不动，极易误判成「站点限制了访问」。用以下脚本切到前台：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <targetId>   # 端口自动发现
+```
+
+`proxy` 没有 `/activate` 端点，该脚本直连 browser 级 WebSocket 发 `Target.activateTarget`（Node 22+ 自带 WebSocket）。滚动采集循环里每轮复查 `document.visibilityState`，一旦回到 `hidden` 就重新激活。
+
 ### 页面内导航
 
 两种方式打开页面内的链接：
@@ -187,20 +205,20 @@ curl -s "http://localhost:3456/close?target=ID"
 
 ### 登录判断
 
-用户日常浏览器天然携带登录态，大多数常用网站已登录。
+专用实例的登录态有两个来源：`scripts/browser-launch.sh sync-login`（从日常 Chrome 导入的快照，**无需关闭 Chrome**）或 `scripts/browser-launch.sh open` 后的人工登录。快照**不会**与日常 Chrome 自动同步 —— 若某站点日常已登录、但实例内仍要求登录，跑一次 `sync-login` 即可。
 
 登录判断的核心问题只有一个：**目标内容拿到了吗？**
 
 打开页面后先尝试获取目标内容。只有当确认**目标内容无法获取**且判断登录能解决时，才告知用户：
-> "当前页面在未登录状态下无法获取[具体内容]，请在你的浏览器中登录 [网站名]，完成后告诉我继续。"
+> "当前页面在未登录状态下无法获取[具体内容]。请执行 `./scripts/browser-launch.sh open` 打开专用实例窗口登录 [网站名]，完成后告诉我继续。"
 
-登录完成后无需重启任何东西，直接刷新页面继续。
+登录完成后无需重启任何东西，直接刷新页面继续。若站点日常浏览器已登录，更快的做法是提议跑一次 `sync-login` 一次性带过登录态。
 
 ### 任务结束
 
 用 `/close` 关闭自己创建的 tab，必须保留用户原有的 tab 不受影响。
 
-Proxy 持续运行，不建议主动停止——重启后需要在浏览器中重新授权 CDP 连接。
+Proxy 持续运行，不建议主动停止。本机 CDP 接入方式的现状、约束与可选路径见 `references/cdp-persistent.md`。
 
 ## 并行调研：子 Agent 分治策略
 

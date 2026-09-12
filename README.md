@@ -36,7 +36,7 @@ AI Agent 原本的联网能力（WebSearch、WebFetch）缺少调度策略和浏
 | 能力 | 说明 |
 |------|------|
 | 联网工具自动选择 | WebSearch / WebFetch / curl / Jina / CDP，按场景自主判断，可任意组合 |
-| CDP Proxy 浏览器操作 | 直连用户日常浏览器（Chrome / Edge / Chromium 系），天然携带登录态，支持动态页面、交互操作、视频截帧 |
+| CDP Proxy 浏览器操作 | 连接 skill 自管的专用浏览器实例（Chrome for Testing，独立 profile，与日常浏览器完全隔离），支持动态页面、交互操作、视频截帧 |
 | 三种点击方式 | `/click`（JS click）、`/clickAt`（CDP 真实鼠标事件）、`/setFiles`（文件上传） |
 | 本地浏览器书签/历史检索 | `find-url.mjs` 跨 Chrome / Edge 查询公网搜不到的目标（内部系统）或用户访问过的页面，支持关键词/时间窗/访问频度排序 |
 | 并行分治 | 多目标时分发子 Agent 并行执行，共享一个 Proxy，tab 级隔离 |
@@ -116,14 +116,16 @@ claude plugin install web-access@web-access --scope user
 git clone https://github.com/eze-is/web-access ~/.claude/skills/web-access
 ```
 
-## 前置配置（CDP 模式）
+## 前置配置
 
-CDP 模式需要 **Node.js 22+** 和浏览器（Chrome / Edge）开启远程调试：
+CDP 模式需要 **Node.js 22+**。
 
-1. 在你想用的浏览器地址栏打开对应 inspect 页面：
-   - Chrome：`chrome://inspect/#remote-debugging`
-   - Edge：`edge://inspect/#remote-debugging`
-2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
+浏览器侧有两条接入路径：
+
+- **推荐：skill 自管的专用实例** —— 零弹窗、不改动日常浏览器、登录态可跨会话复用，装好即用。见下文「专用浏览器：无弹窗 CDP」。
+- **备选：直连日常浏览器**（Chrome / Edge / Chromium 系）—— 需手动开启 toggle 开关，且**每个新 CDP 连接都要人工点「允许」**（approval 机制，官方无"记住"选项）：
+  1. 在浏览器地址栏打开 inspect 页面：Chrome 用 `chrome://inspect/#remote-debugging`，Edge 用 `edge://inspect/#remote-debugging`
+  2. 勾选 **Allow remote debugging for this browser instance**（可能需要重启浏览器）
 
 ### 浏览器偏好（config.env）
 
@@ -134,7 +136,9 @@ skill 长期偏好保存在 `${CLAUDE_SKILL_DIR}/config.env`（首次运行自�
 WEB_ACCESS_BROWSER=edge
 ```
 
-合法值：`chrome` / `edge`
+合法值：`chrome` / `chrome-canary` / `chromium` / `edge` / `web-access`
+
+其中 `web-access` 指本 skill 自管的专用实例（独立 profile，与日常浏览器完全隔离），由 `scripts/browser-launch.sh` 按需启动 —— 这也是推荐值。
 
 **临时用别的浏览器**（不修改 config.env）：
 
@@ -156,9 +160,155 @@ node "${CLAUDE_SKILL_DIR}/scripts/check-deps.mjs"
 # 手动运行请替换为实际路径，如 ~/.claude/skills/web-access
 ```
 
+## 专用浏览器：无弹窗 CDP
+
+### 为什么需要它
+
+想用 CDP 操作浏览器，常见的两条路都有坑：
+
+| 路径 | 问题 |
+|------|------|
+| 给日常 Chrome 加 `--remote-debugging-port` | Chrome 136+ 起，**指向默认 profile 的调试端口会被静默忽略**（`chrome_paths.cc` 中是路径相等比较，显式传默认路径同样被拒），且不报错、不弹窗，只在 stderr 留一行 |
+| `chrome://inspect` 的 toggle 开关 | 走 **approval 机制** —— 每个新 CDP 连接都要人工点「允许」，官方不提供"记住" |
+
+前者的唯一解法是改动日常浏览器的数据目录 / 启动方式 / 生命周期（已被否决，代价全压在用户身上）；后者无法做到无人值守。
+
+⇒ 本 skill 改为**自管一个专用浏览器实例**：独立 profile、按需启停、与日常浏览器完全隔离。用户的浏览器想开就开、想关就关，不受任何影响。
+
+> **⚠️ 专用实例必须使用「应用身份独立」的浏览器**（默认 `Google Chrome for Testing`，bundle id `com.google.chrome.for.testing`）。
+> **绝不能直接跑 `/Applications/Google Chrome.app`** —— 它与日常 Chrome 是同一个应用（bundle id 均为 `com.google.Chrome`），macOS LaunchServices 会把点 Dock 图标 / `open -a "Google Chrome"` 全部路由到这个无窗口实例上，用户看到的现象是「Chrome 开不了、也关不掉」。`--headless` 模式同样会被抢占，只有应用身份独立才能避免。
+
+完整机制、踩坑记录与回滚档案见 [`references/cdp-persistent.md`](./references/cdp-persistent.md)。
+
+### 脚本一览
+
+| 脚本 | 职责 |
+|------|------|
+| `scripts/browser-launch.sh` | 专用实例的生命周期管理（安装 / 启停 / 状态 / 端口 / 开窗 / 同步登录态） |
+| `scripts/cookie-transfer.mjs` | 在两个 CDP 实例间搬运 Cookie（`export` / `import`，走明文，绕开 Keychain 密钥差异） |
+| `scripts/activate-tab.mjs` | 把标签页切到前台（`Target.activateTarget`），解决后台标签页不加载懒内容的问题 |
+
+### browser-launch.sh
+
+**只操作自己创建的实例，绝不触碰日常浏览器。**
+
+```bash
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh install-browser   # 安装专用浏览器（Chrome for Testing）
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh start             # 启动（静默，无窗口）
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh stop              # 关闭实例
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh restart           # 重启
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh status            # 查看状态
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh port              # 输出 CDP 端口
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh open              # 打开可见窗口（人工登录 / 查看）
+${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh sync-login        # 从日常 Chrome 导入登录态
+```
+
+| 子命令 | 说明 |
+|--------|------|
+| `install-browser` | 从本机 Playwright 缓存（`~/Library/Caches/ms-playwright`）复制 `Google Chrome for Testing.app` 到 `~/.web-access/browser/`。用 APFS 写时复制（`cp -Rc`），瞬间完成且**不额外占磁盘**。缓存里没有时会提示先用 `npx playwright install chromium` 获取 |
+| `start` | 以 `--remote-debugging-port=0 --no-startup-window --remote-allow-origins=*` 启动，无窗口、无弹窗；等待至 CDP 就绪（最长 30 秒）。端口由 Chrome 自选，写入 `<profile>/DevToolsActivePort`。已在线时直接返回，不重复启动 |
+| `stop` | 关闭专用实例。按 `--user-data-dir` 精确匹配，**不会误杀日常 Chrome** |
+| `restart` | 等价于 `stop && start` |
+| `status` | 打印在线状态、CDP 端口、浏览器版本、标签页数、profile 路径、浏览器路径、进程存活情况 |
+| `port` | 只输出端口号，便于外部工具取值：`PORT=$(${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh port)` |
+| `open` | 打开可见窗口，用于人工登录或查看。向已运行的实例发新窗口请求，不会另起进程 |
+| `sync-login` | 从日常 Chrome 导入 Cookie，详见下节 |
+
+**可覆盖的环境变量**：
+
+| 变量 | 默认值 | 作用 |
+|------|--------|------|
+| `WEB_ACCESS_PROFILE` | `~/.web-access/browser-profile` | 专用 profile 路径 |
+| `WEB_ACCESS_CHROME` | 空 | 显式指定专用浏览器可执行文件（跳过自动探测） |
+
+专用浏览器的自动探测顺序：`WEB_ACCESS_CHROME` → `~/.web-access/browser/` 下的私有副本 → 系统 Chromium / Edge（bundle id 不同，安全）。**刻意不包含 `/Applications/Google Chrome.app`。**
+
+### 首次使用（4 步）
+
+```bash
+S="${CLAUDE_SKILL_DIR}/scripts/browser-launch.sh"
+
+$S install-browser    # 1. 安装专用浏览器（只需一次）
+$S sync-login         # 2. 从日常 Chrome 导入登录态（无需关闭 Chrome）
+$S start              # 3. 启动实例（check-deps.mjs 也会自动拉起）
+$S status             # 4. 确认就绪
+```
+
+之后 `check-deps.mjs` 检测到实例未运行会**自动拉起**，日常使用无需手动 `start`；也没有 launchd 常驻或开机自启项。
+
+### 登录态同步（sync-login）
+
+专用浏览器与日常 Chrome 使用的 Keychain 条目不同（`Chromium Safe Storage` vs `Chrome Safe Storage`），**直接复制加密的 Cookies 文件解不开** —— Chrome 会把解不开的记录当损坏数据清理掉，表现为"同步完登录态反而没了"。
+
+所以 `sync-login` 走 **CDP 明文搬运**，全程不读取、不修改任何 Keychain 条目：
+
+```
+1. 复制日常 Chrome 的 Cookies(含 -wal) + Local State 到专用 profile
+   ← 运行中的 Chrome 也能复制：Cookies 是 SQLite 库，允许并发读，无需关闭浏览器
+2. 用「源 Chrome 二进制 + 该快照」起临时实例（它持有 Chrome Safe Storage，能解密）
+3. CDP Storage.getCookies → 明文 JSON
+4. 关掉临时实例
+5. 用 Chrome for Testing 起正式实例
+6. CDP Storage.clearCookies + Storage.setCookies → 由 CFT 用自己的密钥写回
+```
+
+实测（Chrome 全程运行未重启，PID 不变）：导出 308 条 cookie / 55 个域名，写入 308/308，x.com、微信公众号、GitHub 等登录态均可用。**注意 `-wal` 必须一并复制**，否则会丢掉最近的写入（实测少复制 -wal 时只有 210 条 / 47 域名）。
+
+> **这是快照，不会与日常 Chrome 自动同步。** Cookie 过期或某站点登录态失效时，重跑一次即可。
+> 明文中间产物 `cookies.json` 写在 `~/.web-access/`（不在 `/tmp`），脚本用完即删。
+
+### cookie-transfer.mjs
+
+通用的 CDP Cookie 搬运工具。`sync-login` 内部调用它，也可以单独使用：
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/cookie-transfer.mjs" export <port> <out.json>   # 导出明文 cookie
+node "${CLAUDE_SKILL_DIR}/scripts/cookie-transfer.mjs" import <port> <in.json>   # 写回明文 cookie
+```
+
+- `export` 调 `Storage.getCookies`，导出全部 cookie 到 JSON（含 domain / path / expires / httpOnly / secure / sameSite），并打印条数与域名数
+- `import` 先 `Storage.clearCookies` 清空目标实例已有 cookie（避免新旧混杂），再按 50 条一批 `Storage.setCookies` 写入
+- 整批失败时**自动逐条重试**，定位个别不兼容的 cookie（如 `__Host-` 前缀约束）；失败的会列出前 8 条但不中断
+- 退出码：有任意一条写入成功即为 0
+
+### activate-tab.mjs
+
+**把指定标签页切到前台。**
+
+```bash
+node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <targetId>          # 端口自动发现
+node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <targetId> 9222     # 显式指定端口
+WEB_ACCESS_PORT=9222 node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <targetId>
+```
+
+**为什么需要它**：专用实例的标签页 `document.visibilityState` **默认是 `hidden`**，即使实例里只有这一个标签页。不少站点的长列表 / 时间线**只在页面前台可见时才加载下一页** —— 标签页处于后台时滚动完全不触发新请求，表现为 `scrollHeight` 卡死、`scrollY` 顶到上限不动，极易被误判成「站点限制了访问」。已知受影响：X 的首页时间线与关注 / 粉丝列表。
+
+它的做法是直连 browser 级 WebSocket 发 `Target.activateTarget`（**Proxy 未暴露 `/activate` 端点**），成功后 `visibilityState` 立刻变 `visible`、`hasFocus` 变 `true`。依赖 Node.js 22+ 自带的 WebSocket，无第三方依赖。
+
+端口发现顺序：显式参数 → `WEB_ACCESS_PORT` 环境变量 → `<profile>/DevToolsActivePort` 引导文件 → 兜底 `9222`。
+
+> 滚动采集长列表时，建议在每轮循环复查 `document.visibilityState`，一旦回到 `hidden` 就重新激活。
+
+### 排查
+
+| 现象 | 原因与处理 |
+|------|-----------|
+| 「Chrome 开不了、也关不掉」 | 专用实例误用了 `/Applications/Google Chrome.app`（bundle id 与日常 Chrome 撞车）。跑 `install-browser` 换成 Chrome for Testing，再 `restart` |
+| `start` 报「找不到可用的专用浏览器」 | 先 `install-browser`；本机 Playwright 缓存为空时用 `npx playwright install chromium` 获取 |
+| 登录态丢失 | 跑一次 `sync-login`。**不要**试图直接复制 Cookies 文件（见上文 Keychain 说明） |
+| 滚动加载不动 | 用 `activate-tab.mjs` 把标签页切到前台 |
+| `status` 显示离线但进程还在 | 引导文件被残留进程占着，`stop` 后重新 `start` |
+| 外部工具要连专用实例 | 用 `browser-launch.sh port` 取端口（实例端口是 Chrome 自选的，不能硬编码 9222） |
+
+### 与直连日常浏览器方式的取舍
+
+直连日常浏览器（Chrome / Edge / Chromium 系）的方式仍然支持，只需把 `config.env` 的 `WEB_ACCESS_BROWSER` 设为 `chrome` / `edge`，并按上文「前置配置」开启 toggle 开关。代价是**每次新建 CDP 连接都要人工点「允许」**，无法无人值守。
+
+本 skill 默认使用专用实例（`WEB_ACCESS_BROWSER=web-access`），因为它同时做到：零弹窗、不改动日常浏览器、登录态可跨会话复用。
+
 ## CDP Proxy API
 
-Proxy 通过 WebSocket 直连浏览器（兼容 `chrome://inspect` / `edge://inspect` 方式，无需命令行参数启动），提供 HTTP API：
+Proxy 通过 WebSocket 直连浏览器 —— 既支持 skill 专用实例（`--remote-debugging-port`，零弹窗，推荐），也兼容 `chrome://inspect` / `edge://inspect` 的 toggle 模式（需人工授权）。连接目标由 `config.env` 的 `WEB_ACCESS_BROWSER` 决定。提供 HTTP API：
 
 ```bash
 # 启动（Agent 会自动管理 Proxy 生命周期，无需手动启动）
