@@ -9,6 +9,10 @@
 // proxy（cdp-proxy.mjs）没有暴露 /activate 端点，所以这里直连 browser 级 WebSocket
 // 发 Target.activateTarget。
 //
+// 它不模拟点击 —— 参数只有 targetId，无坐标、不经过输入管线。实际行为比「切标签页」更多：
+// Chromium 内部走 WebContents::Activate()，会把最小化的窗口一并恢复（实测 windowState
+// 由 minimized 变 normal）；窗口最小化、标签栏根本点不到时，该命令照样生效。
+//
 // 用法：
 //   node activate-tab.mjs <targetId> [port]
 //   node activate-tab.mjs <targetId>            # 端口自动发现

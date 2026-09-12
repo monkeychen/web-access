@@ -203,6 +203,11 @@ check-deps.mjs
 > 可见性**只影响页面自身的懒加载策略**，不影响 CDP 的读写能力 —— `hidden` 状态下
 > `/eval`、`/navigate`、`/screenshot` 全部照常工作（实测 `hidden` 时仍能读到页面文本）。
 
+**`Target.activateTarget` 的实际行为**（比"切标签页"更多）：它**不模拟点击** —— 参数只有
+`targetId`，无坐标、无鼠标事件、不经过输入管线。Chromium 内部走 `WebContents::Activate()`，
+**会把窗口从最小化状态一并恢复**。实测：窗口 `minimized` 时发该命令，`windowState` 变
+`normal`、`visibilityState` 变 `visible`；窗口最小化（标签栏根本点不到）时它照样生效。
+
 ---
 
 ## 七、落地状态与验证

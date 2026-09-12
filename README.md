@@ -285,6 +285,8 @@ WEB_ACCESS_PORT=9222 node "${CLAUDE_SKILL_DIR}/scripts/activate-tab.mjs" <target
 
 它的做法是直连 browser 级 WebSocket 发 `Target.activateTarget`（**Proxy 未暴露 `/activate` 端点**），成功后 `visibilityState` 立刻变 `visible`、`hasFocus` 变 `true`。依赖 Node.js 22+ 自带的 WebSocket，无第三方依赖。
 
+它**不是模拟点击标签页** —— 参数只有 `targetId`，没有坐标、不经过输入事件管线。实际行为比「切标签页」更多：内部走 `WebContents::Activate()`，**会把窗口从最小化状态一并恢复**（实测窗口 `minimized` 时发该命令后 `windowState` 变 `normal`）。反过来，窗口最小化、标签栏根本点不到时它照样生效。
+
 端口发现顺序：显式参数 → `WEB_ACCESS_PORT` 环境变量 → `<profile>/DevToolsActivePort` 引导文件 → 兜底 `9222`。
 
 > 滚动采集长列表时，建议在每轮循环复查 `document.visibilityState`，一旦回到 `hidden` 就重新激活。
